@@ -15,6 +15,10 @@ import (
 type TemplateSet struct {
 	name string
 
+	// Resolver to use to find template files. Allows for implementing custom search and path resolving. Sandbox
+	// restrictions must be implemented by the resolver.
+	Resolver TemplateResolver
+
 	// Globals will be provided to all templates created within this template set
 	Globals Context
 
@@ -53,16 +57,31 @@ type TemplateSet struct {
 	templateCacheMutex sync.Mutex
 }
 
+// A TemplateResolver finds templates.
+type TemplateResolver interface {
+	Resolve(tpl *Template, filename string) (resolvedPath string)
+}
+
+// DefaultTemplateResolver implements file-system based template resolving and fully implements sandbox
+// restrictions.
+type DefaultTemplateResolver struct {
+	set *TemplateSet
+}
+
 // Create your own template sets to separate different kind of templates (e. g. web from mail templates) with
 // different globals or other configurations (like base directories).
 func NewSet(name string) *TemplateSet {
-	return &TemplateSet{
+	set := &TemplateSet{
 		name:          name,
 		Globals:       make(Context),
 		bannedTags:    make(map[string]bool),
 		bannedFilters: make(map[string]bool),
 		templateCache: make(map[string]*Template),
 	}
+
+	set.Resolver = DefaultTemplateResolver{set: set}
+
+	return set
 }
 
 // Use this function to set your template set's base directory. This directory will be used for any relative
@@ -139,7 +158,7 @@ func (set *TemplateSet) FromCache(filename string) (*Template, error) {
 		return set.FromFile(filename)
 	}
 	// Cache the template
-	cleanedFilename := set.resolveFilename(nil, filename)
+	cleanedFilename := set.Resolver.Resolve(nil, filename)
 
 	set.templateCacheMutex.Lock()
 	defer set.templateCacheMutex.Unlock()
@@ -174,7 +193,7 @@ func (set *TemplateSet) FromString(tpl string) (*Template, error) {
 func (set *TemplateSet) FromFile(filename string) (*Template, error) {
 	set.firstTemplateCreated = true
 
-	buf, err := ioutil.ReadFile(set.resolveFilename(nil, filename))
+	buf, err := ioutil.ReadFile(set.Resolver.Resolve(nil, filename))
 	if err != nil {
 		return nil, &Error{
 			Filename: filename,
@@ -219,9 +238,9 @@ func (set *TemplateSet) logf(format string, args ...interface{}) {
 
 // Resolves a filename relative to the base directory. Absolute paths are allowed.
 // If sandbox restrictions are given (SandboxDirectories), they will be respected and checked.
-// On sandbox restriction violation, resolveFilename() panics.
-func (set *TemplateSet) resolveFilename(tpl *Template, filename string) (resolvedPath string) {
-	if len(set.SandboxDirectories) > 0 {
+// On sandbox restriction violation, Resolve() panics.
+func (r DefaultTemplateResolver) Resolve(tpl *Template, filename string) (resolvedPath string) {
+	if len(r.set.SandboxDirectories) > 0 {
 		defer func() {
 			// Remove any ".." or other crap
 			resolvedPath = filepath.Clean(resolvedPath)
@@ -234,7 +253,7 @@ func (set *TemplateSet) resolveFilename(tpl *Template, filename string) (resolve
 			resolvedPath = absPath
 
 			// Check against the sandbox directories (once one pattern matches, we're done and can allow it)
-			for _, pattern := range set.SandboxDirectories {
+			for _, pattern := range r.set.SandboxDirectories {
 				matched, err := filepath.Match(pattern, resolvedPath)
 				if err != nil {
 					panic("Wrong sandbox directory match pattern (see http://golang.org/pkg/path/filepath/#Match).")
@@ -246,7 +265,7 @@ func (set *TemplateSet) resolveFilename(tpl *Template, filename string) (resolve
 			}
 
 			// No pattern matched, we have to log+deny the request
-			set.logf("Access attempt outside of the sandbox directories (blocked): '%s'", resolvedPath)
+			r.set.logf("Access attempt outside of the sandbox directories (blocked): '%s'", resolvedPath)
 			resolvedPath = ""
 		}()
 	}
@@ -255,7 +274,7 @@ func (set *TemplateSet) resolveFilename(tpl *Template, filename string) (resolve
 		return filename
 	}
 
-	if set.baseDirectory == "" {
+	if r.set.baseDirectory == "" {
 		if tpl != nil {
 			if tpl.isTplString {
 				return filename
@@ -265,7 +284,7 @@ func (set *TemplateSet) resolveFilename(tpl *Template, filename string) (resolve
 		}
 		return filename
 	}
-	return filepath.Join(set.baseDirectory, filename)
+	return filepath.Join(r.set.baseDirectory, filename)
 }
 
 // Logging function (internally used)

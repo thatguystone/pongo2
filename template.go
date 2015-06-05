@@ -187,5 +187,13 @@ func (tpl *Template) Execute(context Context) (string, error) {
 	}
 
 	return buffer.String(), nil
+}
+
+func (tpl *Template) Path() string {
+	if tpl.isTplString {
+		return ""
+	}
+
+	return tpl.name
 
 }

@@ -12,6 +12,11 @@ const (
 	varTypeIdent
 )
 
+var (
+	typeOfValuePtr   = reflect.TypeOf(new(Value))
+	typeOfExecCtxPtr = reflect.TypeOf(new(ExecutionContext))
+)
+
 type variablePart struct {
 	typ int
 	s   string
@@ -63,6 +68,8 @@ type nodeVariable struct {
 	locationToken *Token
 	expr          IEvaluator
 }
+
+type executionCtxEval struct{}
 
 func (v *nodeFilteredVariable) Execute(ctx *ExecutionContext, writer TemplateWriter) *Error {
 	value, err := v.Evaluate(ctx)
@@ -196,6 +203,10 @@ func (nv *nodeVariable) Execute(ctx *ExecutionContext, writer TemplateWriter) *E
 	return nil
 }
 
+func (executionCtxEval) Evaluate(ctx *ExecutionContext) (*Value, *Error) {
+	return AsValue(ctx), nil
+}
+
 func (vr *variableResolver) FilterApplied(name string) bool {
 	return false
 }
@@ -294,7 +305,7 @@ func (vr *variableResolver) resolve(ctx *ExecutionContext) (*Value, error) {
 		// If current is a reflect.ValueOf(pongo2.Value), then unpack it
 		// Happens in function calls (as a return value) or by injecting
 		// into the execution context (e.g. in a for-loop)
-		if current.Type() == reflect.TypeOf(&Value{}) {
+		if current.Type() == typeOfValuePtr {
 			tmpValue := current.Interface().(*Value)
 			current = tmpValue.val
 			isSafe = tmpValue.safe
@@ -315,6 +326,12 @@ func (vr *variableResolver) resolve(ctx *ExecutionContext) (*Value, error) {
 			// Check for correct function syntax and types
 			// func(*Value, ...) *Value
 			t := current.Type()
+
+			needImplicitCtx := t.NumIn() > 0 && t.In(0) == typeOfExecCtxPtr &&
+				!(len(part.callingArgs) > 0 && part.callingArgs[0] == executionCtxEval{})
+			if needImplicitCtx {
+				part.callingArgs = append([]functionCallArgument{executionCtxEval{}}, part.callingArgs...)
+			}
 
 			// Input arguments
 			if len(part.callingArgs) != t.NumIn() && !(len(part.callingArgs) >= t.NumIn()-1 && t.IsVariadic()) {
@@ -351,7 +368,7 @@ func (vr *variableResolver) resolve(ctx *ExecutionContext) (*Value, error) {
 					fnArg = t.In(idx)
 				}
 
-				if fnArg != reflect.TypeOf(new(Value)) {
+				if fnArg != typeOfValuePtr {
 					// Function's argument is not a *pongo2.Value, then we have to check whether input argument is of the same type as the function's argument
 					if !isVariadic {
 						if fnArg != reflect.TypeOf(pv.Interface()) && fnArg.Kind() != reflect.Interface {
@@ -377,7 +394,7 @@ func (vr *variableResolver) resolve(ctx *ExecutionContext) (*Value, error) {
 			// Call it and get first return parameter back
 			rv := current.Call(parameters)[0]
 
-			if rv.Type() != reflect.TypeOf(new(Value)) {
+			if rv.Type() != typeOfValuePtr {
 				current = reflect.ValueOf(rv.Interface())
 			} else {
 				// Return the function call value

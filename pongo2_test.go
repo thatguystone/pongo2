@@ -64,3 +64,25 @@ func (s *TestSuite) TestMisc(c *C) {
 		}
 	}, PanicMatches, `\[Error \(where: applyfilter\)\] Filter with name 'doesnotexist' not found.`)
 }
+
+func (s *TestSuite) TestImplicitExecCtx(c *C) {
+	tpl, err := FromString("{{ ImplicitExec }}")
+	if err != nil {
+		c.Fatalf("Error in FromString: %v", err)
+	}
+
+	val := "a stringy thing"
+
+	res, err := tpl.Execute(Context{
+		"Value": val,
+		"ImplicitExec": func(ctx *ExecutionContext) string {
+			return ctx.Public["Value"].(string)
+		},
+	})
+
+	if err != nil {
+		c.Fatalf("Error executing template: %v", err)
+	}
+
+	c.Check(res, Equals, val)
+}
